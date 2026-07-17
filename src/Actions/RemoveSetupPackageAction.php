@@ -8,11 +8,13 @@ use Capell\Core\Actions\RemovePackageAction;
 use Capell\Core\Facades\CapellCore;
 use Capell\Installer\Providers\InstallerServiceProvider;
 use Illuminate\Support\Facades\Artisan;
+use Lorisleiva\Actions\Concerns\AsFake;
 use Lorisleiva\Actions\Concerns\AsObject;
 use Throwable;
 
 final class RemoveSetupPackageAction
 {
+    use AsFake;
     use AsObject;
 
     public function handle(): string
@@ -31,7 +33,7 @@ final class RemoveSetupPackageAction
         try {
             Artisan::call('filament:clear-cached-components');
         } catch (Throwable) {
-            //
+            // Cache cleanup is best-effort because the command may be unavailable after a partial install.
         }
     }
 
