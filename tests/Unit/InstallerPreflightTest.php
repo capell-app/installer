@@ -3,21 +3,17 @@
 declare(strict_types=1);
 
 use Capell\Core\Data\InstallInputData;
-use Capell\Core\Support\Install\InstallMemoryLimit;
+use Capell\Core\Octane\Resettable;
+use Capell\Core\Support\Install\DeveloperToolingInstallationState;
+use Capell\Core\Support\Process\ProcessFactoryInterface;
+use Capell\Core\Support\Process\SymfonyProcessFactory;
 use Capell\Installer\Support\Preflight\InstallerPreflight;
 use Composer\InstalledVersions;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
-
-beforeEach(function (): void {
-    app()->instance(InstallMemoryLimit::class, new InstallMemoryLimit('512M'));
-});
-
-afterEach(function (): void {
-    app()->forgetInstance(InstallMemoryLimit::class);
-});
+use Symfony\Component\Process\Process;
 
 /**
  * @param  array<string, mixed>  $report
@@ -62,7 +58,7 @@ it('reports the current environment with remediation fields', function (): void 
         ->toHaveKeys(['status', 'checks', 'groups', 'environment', 'generatedAt'])
         ->and($report['checks'])->toBeArray()->not->toBeEmpty()
         ->and($report['groups'])->toHaveKeys(['blocking', 'advisory'])
-        ->and($report['environment'])->toHaveKeys(['php', 'memoryLimit', 'laravel', 'os', 'sapi', 'paths'])
+        ->and($report['environment'])->toHaveKeys(['php', 'laravel', 'os', 'sapi', 'paths'])
         ->and($report['checks'][0])->toHaveKeys(['key', 'label', 'status', 'severity', 'message', 'remediation']);
 
     if (InstalledVersions::isInstalled('filament/filament')) {
@@ -74,44 +70,11 @@ it('reports the current environment with remediation fields', function (): void 
     }
 });
 
-it('blocks browser installation when the web php memory limit is below the floor', function (): void {
-    app()->instance(InstallMemoryLimit::class, new InstallMemoryLimit('128M'));
-
-    $report = resolve(InstallerPreflight::class)->run();
-    $memoryCheck = installerPreflightCheck($report, 'php-memory-limit');
-
-    expect($memoryCheck)
-        ->toMatchArray([
-            'label' => 'PHP memory limit',
-            'status' => 'fail',
-            'message' => 'Capell installation requires PHP memory_limit of at least 512M; the current limit is 128M.',
-        ])
-        ->and($memoryCheck['remediation'])->toContain('php -d memory_limit=512M artisan capell:install')
-        ->and($report['environment']['memoryLimit'])->toBe('128M')
-        ->and(InstallerPreflight::hasBlockingFailures($report['checks']))->toBeTrue();
-});
-
-it('accepts unlimited web php memory', function (): void {
-    app()->instance(InstallMemoryLimit::class, new InstallMemoryLimit('-1'));
-
+it('does not inspect or report the php memory limit', function (): void {
     $report = resolve(InstallerPreflight::class)->run();
 
-    expect(installerPreflightCheck($report, 'php-memory-limit'))
-        ->toMatchArray([
-            'status' => 'pass',
-            'message' => 'PHP memory_limit=-1 is available for Capell installation.',
-        ]);
-});
-
-it('accepts the minimum web php memory limit', function (): void {
-    $report = resolve(InstallerPreflight::class)->run();
-
-    expect(installerPreflightCheck($report, 'php-memory-limit'))
-        ->toMatchArray([
-            'status' => 'pass',
-            'message' => 'PHP memory_limit=512M is available for Capell installation.',
-        ])
-        ->and($report['environment']['memoryLimit'])->toBe('512M');
+    expect(collect($report['checks'])->pluck('key'))->not->toContain('php-memory-limit')
+        ->and($report['environment'])->not->toHaveKey('memoryLimit');
 });
 
 it('accepts the documented minimum PHP version', function (): void {
@@ -170,20 +133,53 @@ it('reports missing configured PHP and Git binaries without blocking package-fre
     }
 });
 
-it('reports configured PHP binary command failures once per resolved command', function (): void {
+it('caches command checks within an operation and recomputes them for the next operation', function (): void {
     $temporaryDirectory = storage_path('framework/testing/installer-preflight-' . uniqid());
     File::makeDirectory($temporaryDirectory, 0755, true);
 
-    $counterPath = $temporaryDirectory . '/php-counter.txt';
     $fakePhpPath = $temporaryDirectory . '/php';
-    File::put($fakePhpPath, "#!/bin/sh\necho run >> '{$counterPath}'\nprintf '%s\\n' 'php failed from fixture' >&2\nexit 2\n");
+    File::put($fakePhpPath, "#!/bin/sh\nexit 0\n");
     chmod($fakePhpPath, 0755);
 
+    $processFactory = new class($fakePhpPath) implements ProcessFactoryInterface
+    {
+        public int $phpChecks = 0;
+
+        public bool $phpAvailable = false;
+
+        private readonly SymfonyProcessFactory $processes;
+
+        public function __construct(private readonly string $fakePhpPath)
+        {
+            $this->processes = new SymfonyProcessFactory;
+        }
+
+        public function make(array|string $command, ?string $cwd = null, ?array $environment = null): Process
+        {
+            if (! is_array($command) || ($command[0] ?? null) !== $this->fakePhpPath) {
+                return $this->processes->make($command, $cwd, $environment);
+            }
+
+            $this->phpChecks++;
+
+            $process = Mockery::mock(Process::class);
+            $process->shouldReceive('setTimeout')->once()->with(15)->andReturnSelf();
+            $process->shouldReceive('run')->once()->andReturn($this->phpAvailable ? 0 : 2);
+            $process->shouldReceive('isSuccessful')->once()->andReturn($this->phpAvailable);
+            $process->shouldReceive('getOutput')->andReturn($this->phpAvailable ? 'PHP fixture available' : '');
+            $process->shouldReceive('getErrorOutput')->andReturn($this->phpAvailable ? '' : 'php failed from fixture');
+
+            return $process;
+        }
+    };
+
+    app()->instance(ProcessFactoryInterface::class, $processFactory);
     config(['capell-installer.php_binary' => $fakePhpPath]);
 
     try {
-        $firstReport = resolve(InstallerPreflight::class)->run();
-        $secondReport = resolve(InstallerPreflight::class)->run();
+        $firstOperation = resolve(InstallerPreflight::class);
+        $firstReport = $firstOperation->run();
+        $repeatedReport = resolve(InstallerPreflight::class)->run();
 
         expect(installerPreflightCheck($firstReport, 'php-binary'))
             ->toMatchArray([
@@ -191,8 +187,26 @@ it('reports configured PHP binary command failures once per resolved command', f
                 'message' => 'php failed from fixture',
                 'remediation' => 'Make sure the command is executable by the web PHP process.',
             ])
-            ->and(installerPreflightCheck($secondReport, 'php-binary')['message'])->toBe('php failed from fixture')
-            ->and(substr_count(File::get($counterPath), 'run'))->toBe(1);
+            ->and(installerPreflightCheck($repeatedReport, 'php-binary')['message'])->toBe('php failed from fixture')
+            ->and($processFactory->phpChecks)->toBe(1);
+
+        $processFactory->phpAvailable = true;
+        app()->forgetScopedInstances();
+
+        $secondOperation = resolve(InstallerPreflight::class);
+        $secondReport = $secondOperation->run();
+
+        expect($secondOperation)->not->toBe($firstOperation)
+            ->and(installerPreflightCheck($secondReport, 'php-binary'))
+            ->toMatchArray([
+                'status' => 'pass',
+                'message' => 'PHP fixture available',
+            ])
+            ->and($processFactory->phpChecks)->toBe(2)
+            ->and($firstOperation)->not->toBeInstanceOf(Resettable::class)
+            ->and($secondOperation)->not->toBeInstanceOf(Resettable::class)
+            ->and(collect(app()->tagged(Resettable::TAG))->contains($firstOperation))->toBeFalse()
+            ->and(collect(app()->tagged(Resettable::TAG))->contains($secondOperation))->toBeFalse();
     } finally {
         File::deleteDirectory($temporaryDirectory);
         config(['capell-installer.php_binary' => 'php']);
@@ -420,6 +434,31 @@ it('dry-runs developer tooling packages as dev requirements', function (): void 
         File::deleteDirectory($temporaryDirectory);
         config(['capell-installer.composer_binary' => 'composer']);
     }
+});
+
+it('does not dry-run developer tooling packages that are already installed', function (): void {
+    app()->bind(DeveloperToolingInstallationState::class, fn (): DeveloperToolingInstallationState => new class extends DeveloperToolingInstallationState
+    {
+        public function missingPackageNames(): array
+        {
+            return [];
+        }
+    });
+
+    $report = resolve(InstallerPreflight::class)->run(new InstallInputData(
+        siteUrl: 'https://example.test',
+        packages: [],
+        languages: [],
+        demoContent: false,
+        cachesToClear: [],
+        generateSitemap: false,
+        generateStaticSite: false,
+        installDeveloperTooling: true,
+    ));
+
+    expect(collect($report['checks'])->pluck('key'))
+        ->not->toContain('developer-tooling-packages')
+        ->not->toContain('composer-files-writable');
 });
 
 it('fails selected package dry-runs when composer is required but missing', function (): void {

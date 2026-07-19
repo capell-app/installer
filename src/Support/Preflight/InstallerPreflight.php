@@ -6,19 +6,21 @@ namespace Capell\Installer\Support\Preflight;
 
 use Capell\Core\Data\InstallInputData;
 use Capell\Core\Support\Composer\ComposerProcessEnvironment;
-use Capell\Core\Support\Install\InstallMemoryLimit;
+use Capell\Core\Support\Install\DeveloperToolingInstallationState;
+use Capell\Core\Support\Process\ProcessFactoryInterface;
 use Composer\InstalledVersions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\Process\ExecutableFinder;
-use Symfony\Component\Process\Process;
 use Throwable;
 
 final class InstallerPreflight
 {
     /** @var array<string, array<string, string>> */
-    private static array $commandCheckCache = [];
+    private array $commandCheckCache = [];
+
+    public function __construct(private readonly ProcessFactoryInterface $processFactory) {}
 
     /** @param array<int, array<string, mixed>> $checks */
     public static function hasBlockingFailures(array $checks): bool
@@ -52,9 +54,11 @@ final class InstallerPreflight
      */
     public function run(?InstallInputData $inputData = null): array
     {
+        $missingDeveloperToolingPackages = $inputData?->installDeveloperTooling === true
+            ? resolve(DeveloperToolingInstallationState::class)->missingPackageNames()
+            : [];
         $checks = [
             $this->phpVersion(),
-            $this->phpMemoryLimit(),
             $this->requiredExtensions(),
             $this->processSupport(),
             $this->phpBinary(),
@@ -69,7 +73,7 @@ final class InstallerPreflight
             $this->queueWorkerReadiness(),
         ];
 
-        if ($inputData instanceof InstallInputData && ($inputData->extraPackages !== [] || $inputData->installDeveloperTooling)) {
+        if ($inputData instanceof InstallInputData && ($inputData->extraPackages !== [] || $missingDeveloperToolingPackages !== [])) {
             $checks[] = $this->composerFileReadiness();
         }
 
@@ -77,11 +81,11 @@ final class InstallerPreflight
             $checks[] = $this->selectedPackages('selected-packages', 'Selected package dry-run', $inputData->extraPackages);
         }
 
-        if ($inputData instanceof InstallInputData && $inputData->installDeveloperTooling) {
+        if ($missingDeveloperToolingPackages !== []) {
             $checks[] = $this->selectedPackages(
                 'developer-tooling-packages',
                 'Developer tooling package dry-run',
-                ['capell-app/agent-bridge', 'laravel/boost'],
+                $missingDeveloperToolingPackages,
                 true,
             );
         }
@@ -109,7 +113,6 @@ final class InstallerPreflight
     {
         $environment = [
             'php' => PHP_VERSION,
-            'memoryLimit' => resolve(InstallMemoryLimit::class)->current(),
             'laravel' => app()->version(),
             'os' => PHP_OS_FAMILY,
             'sapi' => PHP_SAPI,
@@ -155,30 +158,6 @@ final class InstallerPreflight
             'PHP version',
             'pass',
             'PHP ' . PHP_VERSION . ' is compatible with Capell.',
-        );
-    }
-
-    /** @return array<string, string> */
-    private function phpMemoryLimit(): array
-    {
-        $memoryLimit = resolve(InstallMemoryLimit::class);
-        $configuredLimit = $memoryLimit->current();
-
-        if (! $memoryLimit->isSatisfied($configuredLimit)) {
-            return $this->check(
-                'php-memory-limit',
-                'PHP memory limit',
-                'fail',
-                $memoryLimit->failureMessage($configuredLimit),
-                'Increase memory_limit to 512M or higher for the web PHP runtime, or run php -d memory_limit=512M artisan capell:install from the terminal.',
-            );
-        }
-
-        return $this->check(
-            'php-memory-limit',
-            'PHP memory limit',
-            'pass',
-            sprintf('PHP memory_limit=%s is available for Capell installation.', $configuredLimit),
         );
     }
 
@@ -549,7 +528,7 @@ final class InstallerPreflight
             $options[] = '--dev';
         }
 
-        $process = new Process(
+        $process = $this->processFactory->make(
             array_merge([
                 $binary,
                 'require',
@@ -582,19 +561,19 @@ final class InstallerPreflight
 
         $cacheKey = hash('sha256', base_path() . '|' . implode("\0", $command) . '|' . ($required ? '1' : '0'));
 
-        if (isset(self::$commandCheckCache[$cacheKey])) {
-            return self::$commandCheckCache[$cacheKey];
+        if (isset($this->commandCheckCache[$cacheKey])) {
+            return $this->commandCheckCache[$cacheKey];
         }
 
         try {
-            $process = new Process($command, base_path(), ComposerProcessEnvironment::forInstall($_SERVER));
+            $process = $this->processFactory->make($command, base_path(), ComposerProcessEnvironment::forInstall($_SERVER));
             $process->setTimeout(15);
             $process->run();
 
             if ($process->isSuccessful()) {
                 $firstOutputLine = strtok($this->clean($process->getOutput()), "\n");
 
-                return self::$commandCheckCache[$cacheKey] = $this->check(
+                return $this->commandCheckCache[$cacheKey] = $this->check(
                     $key,
                     $label,
                     'pass',
@@ -602,7 +581,7 @@ final class InstallerPreflight
                 );
             }
 
-            return self::$commandCheckCache[$cacheKey] = $this->check(
+            return $this->commandCheckCache[$cacheKey] = $this->check(
                 $key,
                 $label,
                 $required ? 'fail' : 'warning',
@@ -610,7 +589,7 @@ final class InstallerPreflight
                 'Make sure the command is executable by the web PHP process.',
             );
         } catch (Throwable $throwable) {
-            return self::$commandCheckCache[$cacheKey] = $this->check(
+            return $this->commandCheckCache[$cacheKey] = $this->check(
                 $key,
                 $label,
                 $required ? 'fail' : 'warning',
