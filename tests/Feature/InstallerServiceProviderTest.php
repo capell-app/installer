@@ -3,8 +3,28 @@
 declare(strict_types=1);
 
 use Capell\Installer\Providers\InstallerServiceProvider;
+use Capell\Installer\Support\InstallerDatabaseTableState;
+use Capell\Installer\Support\InstallerRuntimeMemo;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+
+beforeEach(function (): void {
+    config(['capell-installer.installation_state_cache.host' => 'installer-provider-test']);
+    InstallerDatabaseTableState::forget();
+});
+
+it('resets installer runtime memoization at long-lived worker scope boundaries', function (): void {
+    $memo = resolve(InstallerRuntimeMemo::class);
+    $memo->put('installation-state', false);
+
+    app()->forgetScopedInstances();
+
+    $nextScopeMemo = resolve(InstallerRuntimeMemo::class);
+
+    expect($nextScopeMemo)->not->toBe($memo)
+        ->and($nextScopeMemo->has('installation-state'))->toBeFalse();
+});
 
 it('falls back database-backed cache and session drivers for first web installer requests', function (): void {
     $runningInConsole = new ReflectionProperty($this->app, 'isRunningInConsole');
@@ -29,7 +49,7 @@ it('falls back database-backed cache and session drivers for first web installer
     }
 });
 
-it('keeps database-backed cache and session drivers when their tables already exist', function (): void {
+it('keeps database-backed drivers with one cold schema discovery and none after the persistent cache is warm', function (): void {
     Schema::create('installer_provider_sessions', function (Blueprint $table): void {
         $table->string('id')->primary();
         $table->foreignId('user_id')->nullable()->index();
@@ -58,11 +78,33 @@ it('keeps database-backed cache and session drivers when their tables already ex
     ]);
 
     try {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
         new InstallerServiceProvider($this->app)->bootingPackage();
 
+        // The provider performs a single schema read (one table listing) on the
+        // cold path. SQLite's schema builder prefixes every listing with a
+        // `pragma_compile_options` capability probe for table-size support;
+        // that probe is a driver detail of the test connection, not work the
+        // installer asks for, so it is excluded from the count.
+        $schemaQueries = array_values(array_filter(
+            array_column(DB::getQueryLog(), 'query'),
+            static fn (string $query): bool => ! str_contains($query, 'pragma_compile_options'),
+        ));
+
         expect(config('session.driver'))->toBe('database')
-            ->and(config('cache.default'))->toBe('database');
+            ->and(config('cache.default'))->toBe('database')
+            ->and($schemaQueries)->toHaveCount(1);
+
+        resolve(InstallerRuntimeMemo::class)->flush();
+        DB::flushQueryLog();
+
+        new InstallerServiceProvider($this->app)->bootingPackage();
+
+        expect(DB::getQueryLog())->toHaveCount(0);
     } finally {
+        DB::disableQueryLog();
         $runningInConsole->setValue($this->app, $originalRunningInConsole);
     }
 });
