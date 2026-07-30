@@ -35,8 +35,7 @@
 
         @if ($requirements)
             <span class="package-meta">
-                {{ __('capell-installer::installer.requires') }}:
-                {{ implode(', ', $requirements) }}
+                {{ __('capell-installer::installer.requires') }}: {{ implode(', ', $requirements) }}
             </span>
         @endif
 

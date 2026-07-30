@@ -31,9 +31,7 @@
                     <h2>
                         {{ __('capell-installer::installer.remove_installer_recommendation_heading') }}
                     </h2>
-                    <p>
-                        {{ __('capell-installer::installer.remove_installer_recommendation_body') }}
-                    </p>
+                    <p>{{ __('capell-installer::installer.remove_installer_recommendation_body') }}</p>
                 </div>
 
                 @if ($canRemoveInstaller ?? false)
@@ -89,9 +87,7 @@
                         <h3>
                             {{ __('capell-installer::installer.launchpad_checklist_title') }}
                         </h3>
-                        <p>
-                            {{ __('capell-installer::installer.launchpad_message') }}
-                        </p>
+                        <p>{{ __('capell-installer::installer.launchpad_message') }}</p>
 
                         <ul>
                             <li>

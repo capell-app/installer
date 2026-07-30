@@ -24,9 +24,7 @@
                 <h1>
                     {{ __('capell-installer::installer.progress_heading') }}
                 </h1>
-                <p>
-                    {{ __('capell-installer::installer.progress_title') }}
-                </p>
+                <p>{{ __('capell-installer::installer.progress_title') }}</p>
             </div>
             <span
                 aria-live="polite"
@@ -76,9 +74,7 @@
 
             <aside class="installer-summary">
                 <div class="installer-summary-panel">
-                    <p class="summary-title">
-                        {{ __('capell-installer::installer.workspace_install_review') }}
-                    </p>
+                    <p class="summary-title">{{ __('capell-installer::installer.workspace_install_review') }}</p>
                     <ul class="summary-list">
                         <li>
                             <strong>
@@ -118,121 +114,105 @@
     </main>
 
     <script>
-        ;(function () {
-            ;{{-- format-ignore-start --}}
+        (function () {
+            {{-- format-ignore-start --}}
             var endpoint = @json(route('capell-installer.progress.data', ['installId' => $installId]));
-            var statusEl = document.getElementById('status-indicator')
-            var labelEl = statusEl.querySelector('.label')
-            var logEl = document.getElementById('log')
-            var summaryStatus = document.getElementById('summary-status')
-            var actionsFooter = document.getElementById('actions-footer')
-            var adminLink = document.getElementById('admin-link')
-            var backLink = document.getElementById('back-link')
+            var statusEl = document.getElementById('status-indicator');
+            var labelEl = statusEl.querySelector('.label');
+            var logEl = document.getElementById('log');
+            var summaryStatus = document.getElementById('summary-status');
+            var actionsFooter = document.getElementById('actions-footer');
+            var adminLink = document.getElementById('admin-link');
+            var backLink = document.getElementById('back-link');
             var restartInstallLabel = @json(__('capell-installer::installer.restart_install'));
             {{-- format-ignore-end --}}
-            var stopped = false
-            var renderedLineCount = 0
-            var currentStatus = statusEl.classList.contains(
-                '{{ $installStatus }}',
-            )
-                ? '{{ $installStatus }}'
-                : null
+            var stopped = false;
+            var renderedLineCount = 0;
+            var currentStatus = statusEl.classList.contains('{{ $installStatus }}') ? '{{ $installStatus }}' : null;
 
             function applyStatus(status) {
-                var statusChanged = status !== currentStatus
+                var statusChanged = status !== currentStatus;
 
-                statusEl.classList.remove(
-                    'idle',
-                    'queued',
-                    'running',
-                    'complete',
-                    'cancelled',
-                    'failed',
-                )
-                statusEl.classList.add(status)
+                statusEl.classList.remove('idle', 'queued', 'running', 'complete', 'cancelled', 'failed');
+                statusEl.classList.add(status);
 
                 if (statusChanged) {
-                    currentStatus = status
-                    labelEl.textContent =
-                        status.charAt(0).toUpperCase() + status.slice(1)
+                    currentStatus = status;
+                    labelEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
                 }
 
                 if (summaryStatus && statusChanged) {
-                    summaryStatus.textContent = labelEl.textContent
+                    summaryStatus.textContent = labelEl.textContent;
                 }
                 if (status === 'complete') {
-                    actionsFooter.hidden = false
-                    adminLink.hidden = false
-                    backLink.hidden = true
+                    actionsFooter.hidden = false;
+                    adminLink.hidden = false;
+                    backLink.hidden = true;
                 } else if (status === 'failed' || status === 'cancelled') {
-                    actionsFooter.hidden = false
-                    backLink.hidden = false
-                    backLink.textContent = restartInstallLabel
-                    adminLink.hidden = true
+                    actionsFooter.hidden = false;
+                    backLink.hidden = false;
+                    backLink.textContent = restartInstallLabel;
+                    adminLink.hidden = true;
                 } else {
-                    actionsFooter.hidden = true
-                    backLink.hidden = true
-                    adminLink.hidden = true
+                    actionsFooter.hidden = true;
+                    backLink.hidden = true;
+                    adminLink.hidden = true;
                 }
             }
 
             function renderLines(lines) {
                 if (!lines || lines.length === 0) {
-                    return
+                    return;
                 }
 
                 if (lines.length < renderedLineCount) {
-                    logEl.innerHTML = ''
-                    renderedLineCount = 0
+                    logEl.innerHTML = '';
+                    renderedLineCount = 0;
                 }
 
                 if (renderedLineCount === 0) {
-                    logEl.innerHTML = ''
+                    logEl.innerHTML = '';
                 }
 
                 lines.slice(renderedLineCount).forEach(function (entry) {
-                    var div = document.createElement('div')
-                    div.className = 'line ' + (entry.type || '')
-                    div.textContent = entry.line || ''
-                    logEl.appendChild(div)
-                })
+                    var div = document.createElement('div');
+                    div.className = 'line ' + (entry.type || '');
+                    div.textContent = entry.line || '';
+                    logEl.appendChild(div);
+                });
 
-                renderedLineCount = lines.length
-                logEl.scrollTop = logEl.scrollHeight
+                renderedLineCount = lines.length;
+                logEl.scrollTop = logEl.scrollHeight;
             }
 
             function poll() {
                 if (stopped) {
-                    return
+                    return;
                 }
                 fetch(endpoint, { headers: { Accept: 'application/json' } })
                     .then(function (response) {
-                        return response.json()
+                        return response.json();
                     })
                     .then(function (payload) {
                         if (payload.redirectUrl) {
-                            window.location.href = payload.redirectUrl
-                            return
+                            window.location.href = payload.redirectUrl;
+                            return;
                         }
 
-                        applyStatus(payload.status)
-                        renderLines(payload.lines)
-                        if (
-                            payload.status === 'complete' ||
-                            payload.status === 'failed' ||
-                            payload.status === 'cancelled'
-                        ) {
-                            stopped = true
-                            return
+                        applyStatus(payload.status);
+                        renderLines(payload.lines);
+                        if (payload.status === 'complete' || payload.status === 'failed' || payload.status === 'cancelled') {
+                            stopped = true;
+                            return;
                         }
-                        setTimeout(poll, 1000)
+                        setTimeout(poll, 1000);
                     })
                     .catch(function () {
-                        setTimeout(poll, 2000)
-                    })
+                        setTimeout(poll, 2000);
+                    });
             }
 
-            poll()
-        })()
+            poll();
+        })();
     </script>
 @endsection

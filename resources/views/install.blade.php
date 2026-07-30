@@ -26,9 +26,7 @@
                 @endif
             </div>
             @unless (($capellAlreadyInstalled ?? false) && ! ($canReinstall ?? false))
-                <p id="panel-subheading">
-                    {{ __('capell-installer::installer.subheading') }}
-                </p>
+                <p id="panel-subheading">{{ __('capell-installer::installer.subheading') }}</p>
             @endunless
         </header>
 
@@ -104,9 +102,7 @@
                             {{ __('capell-installer::installer.status_complete') }}
                         </span>
                     </div>
-                    <p class="section-help">
-                        {{ __('capell-installer::installer.already_installed_message') }}
-                    </p>
+                    <p class="section-help">{{ __('capell-installer::installer.already_installed_message') }}</p>
                 </section>
             </div>
 
@@ -264,9 +260,9 @@
                                             </h2>
                                             <span
                                                 @class([
-                                                    'preflight-status',
-                                                    $preflightStatus,
-                                                ])
+                                                'preflight-status',
+                                                $preflightStatus,
+                                            ])
                                             >
                                                 {{ __('capell-installer::installer.preflight_status_' . $preflightStatus) }}
                                             </span>
@@ -289,9 +285,9 @@
                                         @foreach ($preflightChecks as $check)
                                             <article
                                                 @class([
-                                                    'preflight-check',
-                                                    $check['status'] ?? 'warning',
-                                                ])
+                                                'preflight-check',
+                                                $check['status'] ?? 'warning',
+                                            ])
                                             >
                                                 <span
                                                     class="preflight-dot"
@@ -301,16 +297,10 @@
                                                     <strong>
                                                         {{ $check['label'] }}
                                                     </strong>
-                                                    <p>
-                                                        {{ $check['message'] }}
-                                                    </p>
+                                                    <p>{{ $check['message'] }}</p>
 
                                                     @if (! empty($check['remediation']))
-                                                        <p
-                                                            class="preflight-remediation"
-                                                        >
-                                                            {{ $check['remediation'] }}
-                                                        </p>
+                                                        <p class="preflight-remediation">{{ $check['remediation'] }}</p>
                                                     @endif
                                                 </div>
                                             </article>
@@ -324,9 +314,7 @@
                                 data-installer-step="site"
                                 hidden
                             >
-                                <p class="section-help">
-                                    {{ __('capell-installer::installer.section_setup_help') }}
-                                </p>
+                                <p class="section-help">{{ __('capell-installer::installer.section_setup_help') }}</p>
 
                                 <div class="site-setup-grid">
                                     <div
@@ -638,9 +626,7 @@
                                         <h3>
                                             {{ __('capell-installer::installer.admin_access_primary_title') }}
                                         </h3>
-                                        <p>
-                                            {{ __('capell-installer::installer.admin_access_panel_body') }}
-                                        </p>
+                                        <p>{{ __('capell-installer::installer.admin_access_panel_body') }}</p>
                                         <dl class="admin-access-list">
                                             <div>
                                                 <dt>
@@ -679,9 +665,7 @@
                                 <h2>
                                     {{ __('capell-installer::installer.packages_configure_heading') }}
                                 </h2>
-                                <p>
-                                    {{ __('capell-installer::installer.packages_configure_body') }}
-                                </p>
+                                <p>{{ __('capell-installer::installer.packages_configure_body') }}</p>
                             </section>
 
                             <input
@@ -1345,13 +1329,7 @@
                                 title="{{ __('capell-installer::installer.download_report') }}"
                                 type="submit"
                             >
-                                <svg
-                                    aria-hidden="true"
-                                    fill="none"
-                                    height="18"
-                                    viewBox="0 0 24 24"
-                                    width="18"
-                                >
+                                <svg aria-hidden="true" fill="none" height="18" viewBox="0 0 24 24" width="18">
                                     <path
                                         d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"
                                         stroke="currentColor"

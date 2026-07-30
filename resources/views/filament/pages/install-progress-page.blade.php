@@ -27,9 +27,7 @@
                 @forelse ($this->lines() as $line)
                     <p>{{ $line }}</p>
                 @empty
-                    <p>
-                        {{ __('capell-installer::installer.waiting_for_output') }}
-                    </p>
+                    <p>{{ __('capell-installer::installer.waiting_for_output') }}</p>
                 @endforelse
             </div>
         </x-filament::fieldset>
