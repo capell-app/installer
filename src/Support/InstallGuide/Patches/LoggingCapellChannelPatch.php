@@ -4,16 +4,23 @@ declare(strict_types=1);
 
 namespace Capell\Installer\Support\InstallGuide\Patches;
 
+use Capell\Core\Support\Patching\ConfigArrayEditor;
+use Capell\Core\Support\Patching\Patch;
+use Capell\Core\Support\Patching\PatchStatus;
+use Capell\Core\Support\Patching\PhpFileEditor;
 use PhpParser\Node\Arg;
-use PhpParser\Node\Expr;
 use PhpParser\Node\Expr\Array_;
 use PhpParser\Node\Expr\ArrayItem;
 use PhpParser\Node\Expr\FuncCall;
 use PhpParser\Node\Name;
 use PhpParser\Node\Scalar\String_;
+use RuntimeException;
+use Throwable;
 
-class LoggingCapellChannelPatch extends AbstractConfigArrayPatch
+class LoggingCapellChannelPatch implements Patch
 {
+    private const string CONFIG_FILE_PATH = 'config/logging.php';
+
     public function id(): string
     {
         return 'logging-capell-channel-patch';
@@ -44,17 +51,82 @@ class LoggingCapellChannelPatch extends AbstractConfigArrayPatch
         return true;
     }
 
-    protected function relativeConfigFilePath(): string
+    public function probe(): PatchStatus
     {
-        return 'config/logging.php';
+        $configFilePath = base_path(self::CONFIG_FILE_PATH);
+
+        if (! file_exists($configFilePath)) {
+            return PatchStatus::Unsupported;
+        }
+
+        try {
+            $editor = new PhpFileEditor($configFilePath);
+            $configEditor = new ConfigArrayEditor($editor);
+
+            // Check if capell channel already exists
+            if (! $configEditor->hasKey('channels.capell')) {
+                return PatchStatus::Applicable;
+            }
+
+            // capell exists; check if it matches canonical values
+            if ($this->isCanonical()) {
+                return PatchStatus::AlreadyApplied;
+            }
+
+            // capell exists but is customized
+            return PatchStatus::Customised;
+        } catch (Throwable) {
+            return PatchStatus::Unsupported;
+        }
     }
 
-    protected function configArrayPath(): string
+    public function reason(): ?string
     {
-        return 'channels.capell';
+        return null;
     }
 
-    protected function buildConfigValue(): Array_
+    public function apply(): void
+    {
+        $configFilePath = base_path(self::CONFIG_FILE_PATH);
+
+        throw_unless(
+            file_exists($configFilePath),
+            RuntimeException::class,
+            'config/logging.php not found at: ' . $configFilePath,
+        );
+
+        $status = $this->probe();
+        if ($status !== PatchStatus::Applicable) {
+            throw new RuntimeException(
+                'Cannot apply patch when status is: ' . $status->value,
+            );
+        }
+
+        try {
+            $editor = new PhpFileEditor($configFilePath);
+            $editor->backup();
+            $configEditor = new ConfigArrayEditor($editor);
+
+            // Build the capell channel array with canonical values
+            $capellChannel = $this->buildCapellChannelArray();
+
+            // Insert into channels as the first element
+            $configEditor->insertKey('channels.capell', $capellChannel);
+
+            $editor->save();
+        } catch (Throwable $throwable) {
+            throw new RuntimeException(
+                'Failed to apply LoggingCapellChannelPatch: ' . $throwable->getMessage(),
+                (int) $throwable->getCode(),
+                $throwable,
+            );
+        }
+    }
+
+    /**
+     * Build the canonical capell channel array.
+     */
+    private function buildCapellChannelArray(): Array_
     {
         $items = [];
 
@@ -89,20 +161,22 @@ class LoggingCapellChannelPatch extends AbstractConfigArrayPatch
         return new Array_($items, ['kind' => Array_::KIND_SHORT]);
     }
 
-    protected function isCanonicalValue(Expr $value): bool
+    /**
+     * Check if the existing capell channel matches the canonical values.
+     */
+    private function isCanonical(): bool
     {
-        if (! $value instanceof Array_) {
+        try {
+            $configFilePath = base_path(self::CONFIG_FILE_PATH);
+            $content = file_get_contents($configFilePath);
+
+            // Simple heuristic: check if the file contains canonical config values
+            return str_contains($content, "'capell'")
+                && str_contains($content, "'driver' => 'single'")
+                && str_contains($content, "storage_path('logs/capell.log')")
+                && str_contains($content, "'level' => 'debug'");
+        } catch (Throwable) {
             return false;
         }
-
-        $driver = $this->arrayItemValue($value, 'driver');
-        $path = $this->arrayItemValue($value, 'path');
-        $level = $this->arrayItemValue($value, 'level');
-
-        return $driver instanceof String_
-            && $driver->value === 'single'
-            && $this->isFunctionCallWithStringArgument($path, 'storage_path', 'logs/capell.log')
-            && $level instanceof String_
-            && $level->value === 'debug';
     }
 }

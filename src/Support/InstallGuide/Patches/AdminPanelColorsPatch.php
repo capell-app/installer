@@ -7,6 +7,7 @@ namespace Capell\Installer\Support\InstallGuide\Patches;
 use Capell\Admin\Enums\FilamentColorEnum;
 use Capell\Core\Support\Patching\Patch;
 use Capell\Core\Support\Patching\PatchStatus;
+use Capell\Installer\Support\InstallGuide\Patches\Concerns\PatchesAdminPanelProvider;
 use PhpParser\Node;
 use PhpParser\Node\Arg;
 use PhpParser\Node\Expr\MethodCall;
@@ -17,9 +18,13 @@ use Throwable;
 
 class AdminPanelColorsPatch implements Patch
 {
-    public function __construct(
-        private readonly AdminPanelProviderPatcher $patcher = new AdminPanelProviderPatcher,
-    ) {}
+    use PatchesAdminPanelProvider;
+
+    private const string ADMIN_PANEL_PROVIDER_PATH = 'app/Providers/Filament/AdminPanelProvider.php';
+
+    private const string CLASS_NAME = 'AdminPanelProvider';
+
+    private const string PANEL_METHOD_NAME = 'panel';
 
     public function id(): string
     {
@@ -53,7 +58,13 @@ class AdminPanelColorsPatch implements Patch
 
     public function probe(): PatchStatus
     {
-        return $this->patcher->probe($this->decide(...));
+        return $this->probePanelProvider(function (Node $stmt): PatchStatus {
+            if ($this->hasMethodCall($stmt, 'colors')) {
+                return PatchStatus::AlreadyApplied;
+            }
+
+            return PatchStatus::Applicable;
+        });
     }
 
     public function reason(): ?string
@@ -64,8 +75,7 @@ class AdminPanelColorsPatch implements Patch
     public function apply(): void
     {
         try {
-            $this->patcher->apply(
-                $this->decide(...),
+            $this->applyPanelProviderPatch(
                 function (Node $stmt): void {
                     $this->injectColorsCall($stmt);
                 },
@@ -80,21 +90,12 @@ class AdminPanelColorsPatch implements Patch
         }
     }
 
-    private function decide(Node $stmt): PatchStatus
-    {
-        if ($this->patcher->hasMethodCall($stmt, 'colors')) {
-            return PatchStatus::AlreadyApplied;
-        }
-
-        return PatchStatus::Applicable;
-    }
-
     /**
      * Inject the ->colors(FilamentColorEnum::colors()) call after ->path(...).
      */
     private function injectColorsCall(Node $stmt): void
     {
-        $this->patcher->insertMethodCallAfter(
+        $this->insertMethodCallAfter(
             $stmt,
             'path',
             fn (MethodCall $call): MethodCall => new MethodCall($call, 'colors', [

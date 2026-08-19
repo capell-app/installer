@@ -10,11 +10,13 @@ use Capell\Installer\Support\InstallGuide\Patches\AdminPanelNavigationPatch;
 use Capell\Installer\Support\InstallGuide\Patches\AdminPanelPluginPatch;
 use Capell\Installer\Support\InstallGuide\Patches\AdminPanelThemePatch;
 use Capell\Installer\Support\InstallGuide\Patches\AdminPanelWidgetsPatch;
+use Capell\Installer\Support\InstallGuide\Patches\DocOnlyMediaLibraryPatch;
+use Capell\Installer\Support\InstallGuide\Patches\DocOnlyQueueWorkerPatch;
+use Capell\Installer\Support\InstallGuide\Patches\DocOnlyWebServerPatch;
 use Capell\Installer\Support\InstallGuide\Patches\EnvQueueConnectionPatch;
 use Capell\Installer\Support\InstallGuide\Patches\EnvSettingsCachePatch;
 use Capell\Installer\Support\InstallGuide\Patches\FilesystemsPageCacheDiskPatch;
 use Capell\Installer\Support\InstallGuide\Patches\LoggingCapellChannelPatch;
-use Capell\Installer\Support\InstallGuide\Patches\ManualStepPatch;
 use Capell\Installer\Support\InstallGuide\Patches\RemoveWelcomeRoutePatch;
 use Capell\Installer\Support\InstallGuide\Patches\ThemeSourcesPatch;
 use Capell\Installer\Support\InstallGuide\Patches\UserModelPatch;
@@ -58,14 +60,13 @@ it('exposes complete install guide patch metadata and safe missing-file probe st
 
 it('keeps documentation-only install guide patches manual and non-applicable', function (): void {
     $manualPatches = [
-        ManualStepPatch::mediaLibrary(),
-        ManualStepPatch::queueWorker(),
-        ManualStepPatch::webServerConfig(),
+        new DocOnlyMediaLibraryPatch,
+        new DocOnlyQueueWorkerPatch,
+        new DocOnlyWebServerPatch,
     ];
 
     foreach ($manualPatches as $patch) {
-        expect($patch->group())->toBe('Manual steps')
-            ->and($patch->defaultEnabled())->toBeFalse()
+        expect($patch->defaultEnabled())->toBeFalse()
             ->and($patch->probe())->toBe(PatchStatus::Unsupported)
             ->and($patch->reason())->not->toBeNull()
             ->and($patch->docUrl())->not->toBeNull();
@@ -77,18 +78,8 @@ it('keeps documentation-only install guide patches manual and non-applicable', f
     }
 });
 
-it('gives each manual step a distinct id', function (): void {
-    $ids = array_map(
-        fn (Patch $patch): string => $patch->id(),
-        [ManualStepPatch::mediaLibrary(), ManualStepPatch::queueWorker(), ManualStepPatch::webServerConfig()],
-    );
-
-    expect($ids)->toBe(['doc_only_media_library', 'doc_only_queue_worker', 'doc_only_web_server'])
-        ->and(array_unique($ids))->toHaveCount(3);
-});
-
 it('links the queue worker step to capell hosting troubleshooting', function (): void {
-    expect(ManualStepPatch::queueWorker()->docUrl())
+    expect((new DocOnlyQueueWorkerPatch)->docUrl())
         ->toBe('https://docs.capell.app/operations/troubleshooting/#queue-worker');
 });
 
@@ -111,8 +102,8 @@ function installGuideCatalogPatchInstances(): array
         new EnvSettingsCachePatch,
         new FilesystemsPageCacheDiskPatch,
         new LoggingCapellChannelPatch,
-        ManualStepPatch::queueWorker(),
-        ManualStepPatch::webServerConfig(),
-        ManualStepPatch::mediaLibrary(),
+        new DocOnlyQueueWorkerPatch,
+        new DocOnlyWebServerPatch,
+        new DocOnlyMediaLibraryPatch,
     ];
 }

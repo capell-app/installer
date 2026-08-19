@@ -9,6 +9,7 @@ use Capell\Admin\Filament\Widgets\Dashboard\MyWorkQueueFilamentWidget;
 use Capell\Admin\Filament\Widgets\Dashboard\RecentlyPublishedFilamentWidget;
 use Capell\Core\Support\Patching\Patch;
 use Capell\Core\Support\Patching\PatchStatus;
+use Capell\Installer\Support\InstallGuide\Patches\Concerns\PatchesAdminPanelProvider;
 use PhpParser\Node;
 use PhpParser\Node\Arg;
 use PhpParser\Node\Expr\Array_;
@@ -20,6 +21,14 @@ use Throwable;
 
 class AdminPanelWidgetsPatch implements Patch
 {
+    use PatchesAdminPanelProvider;
+
+    private const string ADMIN_PANEL_PROVIDER_PATH = 'app/Providers/Filament/AdminPanelProvider.php';
+
+    private const string CLASS_NAME = 'AdminPanelProvider';
+
+    private const string PANEL_METHOD_NAME = 'panel';
+
     /**
      * The widget classes to inject into the chain.
      *
@@ -30,10 +39,6 @@ class AdminPanelWidgetsPatch implements Patch
         MyWorkQueueFilamentWidget::class,
         RecentlyPublishedFilamentWidget::class,
     ];
-
-    public function __construct(
-        private readonly AdminPanelProviderPatcher $patcher = new AdminPanelProviderPatcher,
-    ) {}
 
     public function id(): string
     {
@@ -67,7 +72,13 @@ class AdminPanelWidgetsPatch implements Patch
 
     public function probe(): PatchStatus
     {
-        return $this->patcher->probe($this->decide(...));
+        return $this->probePanelProvider(function (Node $stmt): PatchStatus {
+            if ($this->hasMethodCall($stmt, 'widgets')) {
+                return PatchStatus::AlreadyApplied;
+            }
+
+            return PatchStatus::Applicable;
+        });
     }
 
     public function reason(): ?string
@@ -78,8 +89,7 @@ class AdminPanelWidgetsPatch implements Patch
     public function apply(): void
     {
         try {
-            $this->patcher->apply(
-                $this->decide(...),
+            $this->applyPanelProviderPatch(
                 function (Node $stmt): void {
                     $this->injectWidgetsCall($stmt);
                 },
@@ -92,15 +102,6 @@ class AdminPanelWidgetsPatch implements Patch
                 $throwable,
             );
         }
-    }
-
-    private function decide(Node $stmt): PatchStatus
-    {
-        if ($this->patcher->hasMethodCall($stmt, 'widgets')) {
-            return PatchStatus::AlreadyApplied;
-        }
-
-        return PatchStatus::Applicable;
     }
 
     /**
@@ -121,6 +122,6 @@ class AdminPanelWidgetsPatch implements Patch
 
         $widgetArray = new Array_($widgetItems);
 
-        $this->patcher->appendMethodCall($stmt, 'widgets', [new Arg($widgetArray)]);
+        $this->appendMethodCall($stmt, 'widgets', [new Arg($widgetArray)]);
     }
 }
