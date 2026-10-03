@@ -10,6 +10,7 @@ use Capell\Core\Support\Install\CacheProgressReporter;
 use Capell\Core\Support\Install\FileLogProgressReporter;
 use Capell\Core\Support\Install\InstallPlan;
 use Capell\Installer\Data\InstallerRunStepData;
+use Capell\Installer\Enums\InstallerRunStatus;
 use Capell\Installer\Enums\InstallerRunStepResultCode;
 use Capell\Installer\Support\AdminUserModelGuard;
 use Capell\Installer\Support\InstallerRemediation;
@@ -51,7 +52,7 @@ final class AdvanceInstallerRunAction
         $plan = $this->sessions->plan($installId);
         $reporter = $this->reporter($installId);
 
-        if ($this->sessions->status($installId, 'pending') === 'complete') {
+        if ($this->sessions->status($installId, InstallerRunStatus::Pending->value) === InstallerRunStatus::Complete->value) {
             return $this->result($installId, $stepKey, InstallerRunStepResultCode::Complete, $reporter);
         }
 
@@ -65,14 +66,16 @@ final class AdvanceInstallerRunAction
         }
 
         if ($stepKey !== $expectedStepKey) {
-            return $this->outOfSequenceResult($installId, $stepKey, $expectedStepKey, $reporter);
+            return $this->outOfSequenceResult($installId, $stepKey, $expectedStepKey, $reporter, $plan);
         }
 
-        $reporter->markRunning();
+        $this->sessions->run($installId)->markRunning($reporter);
 
         if (function_exists('memory_reset_peak_usage')) {
             memory_reset_peak_usage();
         }
+
+        $refreshedPlan = null;
 
         try {
             $reporter->step(InstallPlan::labelForStep($plan, $stepKey) . '…');
@@ -94,11 +97,19 @@ final class AdvanceInstallerRunAction
             if ($stepResult->packageMetadataRefreshed && ! $packageMetadataRefreshed) {
                 $this->sessions->putPackageMetadataRefreshed($installId, true);
             }
+
+            if (InstallPlan::isPackageRequireStep($stepKey) || $stepKey === InstallPlan::STEP_INSTALL_DEVELOPER_TOOLING) {
+                $updatedPlan = InstallPlan::refreshPackageSteps($inputData, $plan, [...$this->sessions->completedSteps($installId), $stepKey]);
+                if ($updatedPlan !== $plan) {
+                    $plan = $updatedPlan;
+                    $refreshedPlan = $plan;
+                    $this->sessions->putPlan($installId, $plan);
+                }
+            }
         } catch (Throwable $throwable) {
             $reporter->error('✗ ' . $throwable::class . ': ' . $throwable->getMessage());
             $reporter->error(sprintf('  at %s:%d', $throwable->getFile(), $throwable->getLine()));
-            $reporter->markFailed();
-            $this->sessions->clearActiveLock($installId);
+            $this->sessions->run($installId)->markFailed($reporter);
 
             return $this->result(
                 installId: $installId,
@@ -117,14 +128,14 @@ final class AdvanceInstallerRunAction
         $this->sessions->recordCompletedStep($installId, $stepKey, $nextStep);
 
         if ($nextStep === null) {
-            $reporter->markComplete();
+            $this->sessions->run($installId)->markComplete($reporter);
             CacheInstallerSuccessSummaryAction::run($installId, $inputData);
-            $this->sessions->clearActiveLock($installId);
+            $this->sessions->run($installId)->releaseLock();
 
             return $this->result($installId, $stepKey, InstallerRunStepResultCode::Complete, $reporter);
         }
 
-        return $this->result($installId, $stepKey, InstallerRunStepResultCode::Running, $reporter, nextStep: $nextStep);
+        return $this->result($installId, $stepKey, InstallerRunStepResultCode::Running, $reporter, nextStep: $nextStep, plan: $refreshedPlan);
     }
 
     /**
@@ -142,8 +153,7 @@ final class AdvanceInstallerRunAction
         $this->remediation->reportPreflight($preflight, $reporter);
 
         if (InstallerPreflight::hasBlockingFailures($preflight['checks'])) {
-            $reporter->markFailed();
-            $this->sessions->clearActiveLock($installId);
+            $this->sessions->run($installId)->markFailed($reporter);
 
             return $this->result(
                 installId: $installId,
@@ -168,11 +178,13 @@ final class AdvanceInstallerRunAction
         );
     }
 
+    /** @param array<int, array{key: string, label: string}> $plan */
     private function outOfSequenceResult(
         string $installId,
         string $stepKey,
         string $expectedStepKey,
         FileLogProgressReporter $reporter,
+        array $plan,
     ): InstallerRunStepData {
         if (in_array($stepKey, $this->sessions->completedSteps($installId), true)) {
             return $this->result(
@@ -181,6 +193,7 @@ final class AdvanceInstallerRunAction
                 code: InstallerRunStepResultCode::Running,
                 reporter: $reporter,
                 nextStep: $expectedStepKey,
+                plan: $plan,
             );
         }
 
@@ -194,6 +207,10 @@ final class AdvanceInstallerRunAction
         );
     }
 
+    /**
+     * @param  array<string, mixed>|null  $preflight
+     * @param  array<int, array{key: string, label: string}>|null  $plan
+     */
     private function result(
         string $installId,
         string $stepKey,
@@ -205,6 +222,7 @@ final class AdvanceInstallerRunAction
         ?string $exceptionMessage = null,
         ?string $remediation = null,
         ?array $preflight = null,
+        ?array $plan = null,
     ): InstallerRunStepData {
         return new InstallerRunStepData(
             installId: $installId,
@@ -218,6 +236,7 @@ final class AdvanceInstallerRunAction
             exceptionMessage: $exceptionMessage,
             remediation: $remediation,
             preflight: $preflight,
+            plan: $plan,
         );
     }
 
