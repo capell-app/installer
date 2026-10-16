@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use Capell\Core\Actions\Install\InstallFilamentPanelAction;
+use Capell\Core\Actions\Install\RequireExtraPackagesAction;
 use Capell\Core\Actions\Install\RunInstallAction;
 use Capell\Core\Actions\Install\RunInstallStepAction;
 use Capell\Core\Contracts\ProgressReporter;
@@ -9,6 +11,8 @@ use Capell\Core\Data\Install\RunInstallStepResultData;
 use Capell\Core\Data\InstallInputData;
 use Capell\Core\Jobs\RunCapellInstallJob;
 use Capell\Core\Support\Install\InstallPlan;
+use Capell\Core\Support\Install\InstallRunState;
+use Capell\Core\Support\Install\NullProgressReporter;
 use Capell\Installer\Actions\AdvanceInstallerRunAction;
 use Capell\Installer\Actions\BuildInstallerRunReportAction;
 use Capell\Installer\Actions\CancelInstallerRunAction;
@@ -22,7 +26,9 @@ use Capell\Installer\Enums\InstallerRunMode;
 use Capell\Installer\Enums\InstallerRunStepResultCode;
 use Capell\Installer\Support\InstallerSessionRepository;
 use Capell\Installer\Support\Preflight\InstallerPreflight;
+use Capell\Tests\Support\Fakes\FakeProcessFactory;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Validation\ValidationException;
 
@@ -563,4 +569,69 @@ it('refuses starting a destructive browser install before it queues work', funct
     expect(fn (): InstallerRunStartData => StartInstallerRunAction::run('84848484-8484-4848-a848-848484848484', $input, InstallerRunMode::Queued))
         ->toThrow(ValidationException::class);
     Queue::assertNothingPushed();
+});
+
+it('blocks conflicting package selections before requiring packages in synchronous and queued runs', function (bool $queued): void {
+    config(['cache.default' => 'array', 'queue.default' => 'database']);
+    Queue::fake();
+    $factory = FakeProcessFactory::bind()->byDefault(exitCode: 2, errorOutput: 'dependency conflict');
+    // Guard the broken path too: this regression must never install anything.
+    RequireExtraPackagesAction::mock()->shouldNotReceive('handle');
+    $input = new InstallInputData(
+        siteUrl: 'https://example.test',
+        packages: [],
+        languages: ['en'],
+        demoContent: false,
+        cachesToClear: [],
+        generateSitemap: false,
+        generateStaticSite: false,
+        extraPackages: ['capell-app/admin', 'capell-app/frontend'],
+    );
+    $installId = '35353535-3535-4353-a353-353535353535';
+
+    if ($queued) {
+        StartInstallerRunAction::run($installId, $input, InstallerRunMode::Queued);
+        // The worker rechecks the selection even if the page cached success.
+        Cache::put('capell.installer.package_installable.' . hash('sha256', 'capell-app/admin'), true);
+        expect(fn () => new RunCapellInstallJob($input, $installId)->handle())
+            ->toThrow(RuntimeException::class, 'dependency conflict');
+    } else {
+        $result = StartInstallerRunAction::run($installId, $input, InstallerRunMode::Synchronous);
+        expect($result->completed)->toBeFalse()->and($result->status)->toBe('failed');
+    }
+
+    expect(Cache::get('capell.install.' . $installId . '.status'))->toBe('failed');
+    expect($factory->commands())->toHaveCount(1);
+    expect($factory->commands()[0])->toContain('require', '--dry-run', '--no-scripts', 'capell-app/admin:*', 'capell-app/frontend:*');
+
+    $log = Cache::get('capell.install.' . $installId . '.output', '');
+    expect(json_encode($log))->toContain('dependency conflict', 'preflight-checks');
+})->with(['synchronous' => false, 'queued worker' => true]);
+
+it('preserves the active runs scaffold ownership when an older run is cancelled', function (): void {
+    $originalBasePath = app()->basePath();
+    $temporaryBasePath = sys_get_temp_dir() . '/capell-run-scaffold-' . bin2hex(random_bytes(8));
+    File::ensureDirectoryExists($temporaryBasePath);
+    app()->setBasePath($temporaryBasePath);
+
+    try {
+        config(['cache.default' => 'array']);
+        $sessions = resolve(InstallerSessionRepository::class);
+        $sessions->run('older-run')->markRunning();
+        $sessions->run('active-run')->startSynchronous();
+        $path = app_path('Providers/Filament/AdminPanelProvider.php');
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, '<?php class AdminPanelProvider { public function panel($panel) { return $panel->id("admin"); } }');
+        InstallRunState::recordScaffoldedPanelProviders([$path]);
+
+        CancelInstallerRunAction::run('older-run');
+
+        expect($sessions->activeInstallId())->toBe('active-run')
+            ->and(InstallRunState::scaffoldedPanelProviders())->toContain('app/Providers/Filament/AdminPanelProvider.php');
+        InstallFilamentPanelAction::run(new NullProgressReporter);
+        expect(resource_path('css/filament/admin/theme.css'))->toBeFile();
+    } finally {
+        app()->setBasePath($originalBasePath);
+        File::deleteDirectory($temporaryBasePath);
+    }
 });
