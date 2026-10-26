@@ -98,7 +98,7 @@ test('an empty csrf refresh restores the installer form', async () => {
 })
 
 test('field errors reveal matched steps and present unmatched messages', () => {
-    const inputAttributes = new Map()
+    const inputAttributes = new Map([['aria-describedby', 'site-help']])
     const fieldError = { textContent: '' }
     const siteSection = {
         dataset: { installerStep: 'site' },
@@ -116,6 +116,7 @@ test('field errors reveal matched steps and present unmatched messages', () => {
 
             return null
         },
+        querySelectorAll: () => [input],
     }
     const input = {
         name: 'site_name',
@@ -128,7 +129,10 @@ test('field errors reveal matched steps and present unmatched messages', () => {
             return null
         },
         setAttribute: (name, value) => inputAttributes.set(name, value),
+        getAttribute: (name) => inputAttributes.get(name) ?? null,
         removeAttribute: (name) => inputAttributes.delete(name),
+        scrollIntoView: () => {},
+        focus: () => {},
     }
     const readinessSection = {
         dataset: { installerStep: 'readiness' },
@@ -200,9 +204,64 @@ test('field errors reveal matched steps and present unmatched messages', () => {
     assert.equal(wizard.currentStep(), 'site')
     assert.equal(siteSection.hidden, false)
     assert.equal(inputAttributes.get('aria-invalid'), 'true')
+    assert.equal(
+        inputAttributes.get('aria-describedby'),
+        'site-help installer-error-site_name',
+    )
     assert.equal(errorsBox.hidden, false)
     assert.deepEqual(
         errorsList.children.map((item) => item.textContent),
         ['The configured cache store is unavailable.'],
     )
+
+    wizard.clearFieldErrors()
+    wizard.clearFieldErrors()
+
+    assert.equal(field.classList.contains('has-error'), false)
+    assert.equal(fieldError.textContent, '')
+    assert.equal(inputAttributes.has('aria-invalid'), false)
+    assert.equal(inputAttributes.get('aria-describedby'), 'site-help')
+    assert.equal(errorsBox.hidden, true)
+    assert.deepEqual(errorsList.children, [])
+})
+
+test('an overlapping step response polls without completing or advancing the step', async () => {
+    const events = []
+    const timers = []
+    const context = loadInstallerScript('runner.js', {
+        CapellInstaller: { support: {} },
+        document: { getElementById: () => ({}) },
+        fetch: async () =>
+            new Response(
+                JSON.stringify({
+                    status: 'running',
+                    inProgress: true,
+                    nextStep: 'database',
+                    lines: [],
+                }),
+            ),
+        setTimeout: (callback, delay) => timers.push({ callback, delay }),
+    })
+    const runner = context.CapellInstaller.createInstallRunner({
+        form: { querySelector: () => null, addEventListener: () => {} },
+        wizard: {},
+        packages: {},
+        csrf: { token: () => 'token' },
+        progress: {
+            setStatus: () => {},
+            startStepTimer: () => {},
+            markStepStatus: () => {},
+            renderLines: () => {},
+            completeStep: () => events.push('complete'),
+        },
+    })
+    runner.runNextStep('install-id', '/run-step', 'database')
+    await new Promise(setImmediate)
+    assert.deepEqual(events, [])
+    assert.equal(timers.length, 1)
+    assert.equal(timers[0].delay, 2000)
+    timers[0].callback()
+    await new Promise(setImmediate)
+    assert.equal(timers.length, 2)
+    assert.deepEqual(events, [])
 })

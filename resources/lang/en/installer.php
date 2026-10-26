@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 return [
+    'unlock' => 'Continue to installer',
     'review_loading' => 'Preparing installation review…',
     'review_changed' => 'Settings changed while the review was loading. Review the installation again.',
     'review_mode' => 'Execution mode',
@@ -107,6 +108,9 @@ return [
     'page_title' => 'Capell Installer',
     'preflight_checklist' => 'System checklist',
     'preflight_passing_summary' => ':passed / :total passing',
+    'preflight_status_fail' => 'Action required',
+    'preflight_status_pass' => 'Ready',
+    'preflight_status_warning' => 'Review advised',
     'progress_completed_steps' => ':completed of :total complete',
     'progress_heading' => 'Install progress',
     'progress_next_step' => 'Next',
@@ -142,6 +146,7 @@ return [
     'section_installed_packages' => 'Installed extensions',
     'section_installed_packages_help' => 'These extensions are already available in this application.',
     'marketplace_later_note' => 'Install extensions later via Marketplace.',
+    'installer_sections' => 'Installer sections',
     'section_options' => 'Options',
     'section_packages' => 'Core Packages',
     'section_preflight' => 'Pre-flight checks',

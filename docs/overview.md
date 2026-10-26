@@ -75,6 +75,41 @@ and retries once, then returns the user to the form. Step requests send the
 current token and accept replacement `csrfToken` values from responses, but a
 `419` is a hard expired-session failure with no automatic retry.
 
+Browser step requests acquire an owner-aware execution lease. If a disconnected
+request is still running, a duplicate response has `inProgress: true`; the browser
+polls the same step without marking it complete. A repeated request after commit
+returns the next persisted step. Cancellation or replacement prevents an old
+request from committing resolved-user, completion or failure state when it returns;
+it does not undo work the executing command has already performed.
+
+Queued failures keep their active lock and `queued` status during retry backoff.
+Exhaustion marks the run failed and releases only that run's lock. A superseded
+attempt cannot clear its replacement's lock or overwrite cancellation. The latest
+run identity remains cached for the same window, so a failed browser run cannot
+resume after its replacement has completed and released the active lock.
+
+## Deploying Changes To Installer Execution
+
+Drain installer execution before switching releases that change admission or state
+commit guards. An HTTP request or queue job already executing old code retains its
+old behaviour, even after its run is cancelled by new code.
+
+1. Block new installer starts and step requests on every serving node at the
+   ingress, and pause queue consumers that can admit installer jobs. Keep that
+   admission block in place throughout the release switch.
+2. Wait for every in-flight installer HTTP request and queue job to finish. Check
+   the serving process manager and queue worker state on all nodes; a cancelled
+   cache status or an empty active lock does not prove execution has drained.
+   If execution cannot be confirmed idle, keep installer admission closed and
+   postpone the switch. Do not clear locks or terminate work to bypass this gate.
+3. Switch the release, restart retained PHP/Octane and queue processes, and confirm
+   every node runs the new code before restoring queue consumption and installer
+   admission. Refresh open installer pages before continuing setup.
+
+A queue restart signal permits the current job to finish. A page refresh does not
+stop an already executing HTTP request. Neither replaces the drain gate above.
+The installer cache protocol cannot fence an old binary that lacks these guards.
+
 ## Data Model
 
 Installer owns no data tables.
@@ -93,6 +128,17 @@ Migration impact:
 
 Deletion and retention:
 
+- Cancellation purges executable input and the active plan. The download retains
+  a separate redacted snapshot of the original plan, completed steps, preflight,
+  diagnostics and output for the existing two-hour cache window. It cannot resume
+  the cancelled install, and access still requires the originating browser session.
+- Reports retain the existing bounded diagnostic output, including terminal errors
+  beyond 500 progress entries. Late diagnostics and exceptions append to the
+  cancelled report while the executor unwinds, without restoring executable input.
+  The combined output keeps the most recent complete lines within 256 KiB and
+  reports omitted line counts when late additions exceed that bound. Each new
+  output line is limited to 8 KiB. Input secrets and labelled credentials are
+  redacted; only an encrypted redaction dictionary survives input cleanup.
 - Cache entries expire after the configured install window.
 - Removing the package deletes the installer code path, not the installed site content.
 
@@ -114,6 +160,9 @@ Deletion and retention:
 - Database-backed sessions or cache can fail before tables exist; the provider falls back per request when safe.
 - Composer package choices are shown only when the web PHP process can resolve the package.
 - Guide patches must be idempotent and covered by focused tests.
+- Install Guide requires **Review changes** before **Apply changes**. Review is read-only: it shows affected relative paths, bounded before/after edits with host literal values redacted, and the backup or file-creation recovery plan. The server binds a review to the current actor, selection and source fingerprints for 15 minutes. Changing the selection, source contents or file permissions requires a fresh review. Applying consumes the review, including on failure.
+- Patches may opt into Core's `Capell\Core\Support\Patching\ReviewablePatch` capability without changing the existing `Patch` interface. `preview()` returns `PatchPreviewData`; `recoveryResult()` returns `PatchRecoveryData` with actual backup and created-file paths, including partial failures. Keep raw source contents server-side and use the same patch-owned plan for preview and application. Patches without this capability, or whose current state cannot be previewed safely, remain explicit manual steps in the reviewed browser flow. Existing command-line patch entry points retain their applicability safeguards.
+- Results remain visible after patch statuses refresh. Existing files are backed up before writing; newly created files are listed separately with instructions to reverse their creation. Multiple edits within the same second retain separate backups. A failed write never counts as a success or a skipped patch.
 
 ## Quick Start
 
