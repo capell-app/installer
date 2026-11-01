@@ -1140,25 +1140,6 @@
                                             </span>
                                         </label>
                                     @endif
-
-                                    @if ($showWelcomeRouteToggle)
-                                        <label class="checkbox-row">
-                                            <input
-                                                type="checkbox"
-                                                name="install_welcome_route"
-                                                value="1"
-                                                @checked(old('install_welcome_route', '1') === '1')
-                                            />
-                                            <span class="text">
-                                                <strong>
-                                                    {{ __('capell-installer::installer.option_install_welcome_route') }}
-                                                </strong>
-                                                <span>
-                                                    {{ __('capell-installer::installer.option_install_welcome_route_help') }}
-                                                </span>
-                                            </span>
-                                        </label>
-                                    @endif
                                 </div>
 
                                 <div class="field">
@@ -1312,6 +1293,35 @@
                                         </ul>
                                     </div>
                                 </div>
+                            </fieldset>
+                            <fieldset
+                                class="panel-body"
+                                data-installer-step="options"
+                                hidden
+                            >
+                                <legend>
+                                    {{ __('capell-installer::installer.table_names_title') }}
+                                </legend>
+                                <p class="section-help">{{ __('capell-installer::installer.table_names_help') }}</p>
+                                <label
+                                    for="table_prefix"
+                                    >{{ __('capell-installer::installer.table_prefix') }}</label
+                                >
+                                <input
+                                    id="table_prefix"
+                                    name="table_prefix"
+                                    type="text"
+                                    value="{{ old('table_prefix') }}"
+                                />
+                                <label
+                                    for="table_aliases"
+                                    >{{ __('capell-installer::installer.table_aliases') }}</label
+                                >
+                                <textarea
+                                    id="table_aliases"
+                                    name="table_aliases"
+                                    >{{ old('table_aliases') }}</textarea
+                                >
                             </fieldset>
                         </div>
 

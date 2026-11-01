@@ -116,7 +116,7 @@ final class BuildInstallerPageDataAction
             'capellAlreadyInstalled' => $capellAlreadyInstalled,
             'canReinstall' => $canReinstall,
             'showFilamentPanelToggle' => $this->shouldOfferFilamentPanelInstall($packages, $downloadablePackages),
-            'showWelcomeRouteToggle' => resolve(WelcomeRouteInstaller::class)->canInstall(),
+            'showWelcomeRouteToggle' => resolve(WelcomeRouteInstaller::class)->hasStockWelcomeRoute(),
             'showRoleUsersToggle' => $this->shouldShowRoleUsersToggle(),
             'developerToolingInstalled' => resolve(DeveloperToolingInstallationState::class)->isInstalled(),
             'defaultAdminUser' => $this->options->defaultAdminUser(),
@@ -265,7 +265,7 @@ final class BuildInstallerPageDataAction
 
     private function shouldShowRoleUsersToggle(): bool
     {
-        if (! Schema::hasTable('roles')) {
+        if (! Schema::hasTable((string) config('permission.table_names.roles', 'roles'))) {
             return true;
         }
 

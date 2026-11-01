@@ -22,6 +22,8 @@ use Capell\Core\Support\Install\UnavailableAdminPanelUrlResolver;
 use Capell\Core\Support\Plugins\PluginPackagesFetcher;
 use Capell\Core\Support\Process\ProcessFactoryInterface;
 use Capell\Installer\Actions\BuildInstallerPageDataAction;
+use Capell\Installer\Actions\RemoveWelcomeRouteAfterInstallAction;
+use Capell\Installer\Actions\ResolveInstallerTableNamesAction;
 use Capell\Installer\Support\InstallerSessionRepository;
 use Capell\Installer\Support\Preflight\InstallerPreflight;
 use Capell\Tests\Fixtures\Models\User;
@@ -29,10 +31,14 @@ use Capell\Tests\Support\Concerns\CreatesAdminUser;
 use Capell\Tests\Support\PatchedPhpRuntime;
 use Capell\Tests\Support\StylesheetRuntime;
 use Composer\InstalledVersions;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Testing\Fakes\QueueFake;
 use Illuminate\Testing\TestResponse;
 
 use function Pest\Laravel\get;
@@ -3072,6 +3078,263 @@ it('renders ordered native step controls for a named workspace with hidden inact
         foreach ($page->query('//*[@data-installer-step="' . $step . '"]') ?: [] as $section) {
             assert($section instanceof DOMElement);
             expect($section->hasAttribute('hidden'))->toBe($step !== 'readiness');
+        }
+    }
+});
+
+it('offers to remove the untouched Laravel welcome route after a successful install', function (): void {
+    $routesPath = tempnam(sys_get_temp_dir(), 'capell-welcome-');
+    file_put_contents($routesPath, "<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/', fn () => view('welcome'));\n");
+    config(['capell.install.welcome_routes_web_path' => $routesPath]);
+    CapellCore::forcePackageInstalled('capell-app/frontend');
+    $installId = '6b1af98b-bfd5-46da-9aa8-765d94f17d7c';
+    Cache::put(sprintf('capell.install.%s.status', $installId), 'complete');
+    Cache::put(sprintf('capell.install.%s.success', $installId), []);
+
+    try {
+        $response = withSession(installerAccessSessionData($installId))
+            ->get(route('capell-installer.success', ['installId' => $installId]))
+            ->assertOk()
+            ->assertSee('Remove the default Laravel welcome route');
+        $page = installerMarkup($response->content());
+        $action = route('capell-installer.remove-welcome-route', ['installId' => $installId]);
+        expect(domCount($page, '//form[@method="POST" and @action="' . $action . '"]//input[@name="_token"]'))->toBe(1)
+            ->and(file_get_contents($routesPath))->toContain("view('welcome')");
+    } finally {
+        unlink($routesPath);
+    }
+});
+
+it('does not offer to remove a modified home route after installation', function (): void {
+    $routesPath = tempnam(sys_get_temp_dir(), 'capell-welcome-');
+    file_put_contents($routesPath, "<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/', fn () => view('custom'));\n");
+    config(['capell.install.welcome_routes_web_path' => $routesPath]);
+    CapellCore::forcePackageInstalled('capell-app/frontend');
+    $installId = '6b1af98b-bfd5-46da-9aa8-765d94f17d7c';
+    Cache::put(sprintf('capell.install.%s.status', $installId), 'complete');
+    Cache::put(sprintf('capell.install.%s.success', $installId), []);
+
+    try {
+        withSession(installerAccessSessionData($installId))
+            ->get(route('capell-installer.success', ['installId' => $installId]))
+            ->assertOk()
+            ->assertDontSee('Remove the default Laravel welcome route');
+    } finally {
+        unlink($routesPath);
+    }
+});
+
+it('removes the stock route only after confirmation on the completion screen', function (): void {
+    $routesPath = tempnam(sys_get_temp_dir(), 'capell-welcome-');
+    $envPath = tempnam(sys_get_temp_dir(), 'capell-env-');
+    file_put_contents($routesPath, "<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/', fn () => view('welcome'));\n");
+    config(['capell.install.welcome_routes_web_path' => $routesPath, 'capell.install.welcome_env_path' => $envPath]);
+    CapellCore::forcePackageInstalled('capell-app/frontend');
+    $installId = '6b1af98b-bfd5-46da-9aa8-765d94f17d7c';
+    Cache::put(sprintf('capell.install.%s.status', $installId), 'complete');
+
+    try {
+        withSession(installerAccessSessionData($installId))
+            ->post('/install/' . $installId . '/remove-welcome-route')
+            ->assertOk();
+        expect(file_get_contents($routesPath))->not->toContain("view('welcome')")
+            ->and(file_get_contents($envPath))->toContain('CAPELL_FRONTEND_REGISTER_HOME_ROUTE=true');
+    } finally {
+        unlink($routesPath);
+        unlink($envPath);
+    }
+});
+
+it('does not remove a route changed before the completion action', function (): void {
+    $routesPath = tempnam(sys_get_temp_dir(), 'capell-welcome-');
+    $customRoute = "<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/', fn () => view('custom'));\n";
+    file_put_contents($routesPath, $customRoute);
+    config(['capell.install.welcome_routes_web_path' => $routesPath]);
+    CapellCore::forcePackageInstalled('capell-app/frontend');
+    $installId = '6b1af98b-bfd5-46da-9aa8-765d94f17d7c';
+    Cache::put(sprintf('capell.install.%s.status', $installId), 'complete');
+
+    try {
+        withSession(installerAccessSessionData($installId))
+            ->post('/install/' . $installId . '/remove-welcome-route')
+            ->assertStatus(409);
+        expect(file_get_contents($routesPath))->toBe($customRoute);
+    } finally {
+        unlink($routesPath);
+    }
+});
+
+it('rejects completion route removal without access to the completed install', function (): void {
+    $routesPath = tempnam(sys_get_temp_dir(), 'capell-welcome-');
+    $stockRoute = "<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/', fn () => view('welcome'));\n";
+    file_put_contents($routesPath, $stockRoute);
+    config(['capell.install.welcome_routes_web_path' => $routesPath]);
+    CapellCore::forcePackageInstalled('capell-app/frontend');
+    $installId = '6b1af98b-bfd5-46da-9aa8-765d94f17d7c';
+    Cache::put(sprintf('capell.install.%s.status', $installId), 'complete');
+
+    try {
+        post('/install/' . $installId . '/remove-welcome-route')->assertNotFound();
+        Cache::put(sprintf('capell.install.%s.status', $installId), 'running');
+        withSession(installerAccessSessionData($installId))
+            ->post('/install/' . $installId . '/remove-welcome-route')->assertNotFound();
+        expect(file_get_contents($routesPath))->toBe($stockRoute);
+    } finally {
+        unlink($routesPath);
+    }
+});
+
+it('preserves the welcome route when the release root is immutable', function (): void {
+    $routesPath = tempnam(sys_get_temp_dir(), 'capell-welcome-');
+    $stockRoute = "<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/', fn () => view('welcome'));\n";
+    file_put_contents($routesPath, $stockRoute);
+    config(['capell.install.welcome_routes_web_path' => $routesPath, 'capell.release_root_mode' => 'immutable']);
+
+    try {
+        expect(fn (): mixed => RemoveWelcomeRouteAfterInstallAction::run())
+            ->toThrow(RuntimeException::class);
+        expect(file_get_contents($routesPath))->toBe($stockRoute);
+    } finally {
+        unlink($routesPath);
+    }
+});
+
+it('explains when the completion route update cannot be applied', function (): void {
+    $routesPath = tempnam(sys_get_temp_dir(), 'capell-welcome-');
+    $stockRoute = "<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/', fn () => view('welcome'));\n";
+    file_put_contents($routesPath, $stockRoute);
+    config(['capell.install.welcome_routes_web_path' => $routesPath, 'capell.release_root_mode' => 'immutable']);
+    CapellCore::forcePackageInstalled('capell-app/frontend');
+    $installId = '6b1af98b-bfd5-46da-9aa8-765d94f17d7c';
+    Cache::put(sprintf('capell.install.%s.status', $installId), 'complete');
+
+    try {
+        withSession(installerAccessSessionData($installId))
+            ->post('/install/' . $installId . '/remove-welcome-route')
+            ->assertStatus(500)
+            ->assertSee('Check routes/web.php and .env before retrying');
+        expect(file_get_contents($routesPath))->toBe($stockRoute);
+    } finally {
+        unlink($routesPath);
+    }
+});
+
+it('offers table naming choices in the web installer', function (): void {
+    $page = installerShowMarkup();
+    expect(domCount($page, '//*[@id="installer-workspace"]//*[@name="table_prefix"]'))->toBe(1)
+        ->and(domCount($page, '//*[@id="installer-workspace"]//*[@name="table_aliases"]'))->toBe(1);
+});
+
+it('reports a foreign table before reviewing a web installation', function (): void {
+    config()->set('capell.database.table_aliases.pages', 'foreign_pages');
+    $record = DB::table('migrations')->where('migration', '2026_05_10_190832_12_create_pages_table')->first();
+    DB::table('migrations')->where('migration', '2026_05_10_190832_12_create_pages_table')->delete();
+    Schema::create('foreign_pages', fn (Blueprint $table) => $table->id());
+    try {
+        $payload = installPostPayload();
+        $this->postJson(route('capell-installer.store'), [...$payload, 'review_only' => true])
+            ->assertUnprocessable()->assertJsonValidationErrors('table_names')
+            ->assertSee('foreign_pages');
+    } finally {
+        Schema::dropIfExists('foreign_pages');
+        if ($record !== null) {
+            DB::table('migrations')->insert((array) $record);
+        }
+    }
+});
+
+it('reviews and writes a web table alias only after confirmation', function (): void {
+    config()->set('capell.database.table_aliases.pages', 'foreign_pages');
+    $record = DB::table('migrations')->where('migration', '2026_05_10_190832_12_create_pages_table')->first();
+    DB::table('migrations')->where('migration', '2026_05_10_190832_12_create_pages_table')->delete();
+    Schema::create('foreign_pages', fn (Blueprint $table) => $table->id());
+    $configPath = config_path('capell.php');
+    $original = is_file($configPath) ? file_get_contents($configPath) : null;
+    try {
+        $payload = installPostPayload(['table_aliases' => "\npages=web_pages\n"]);
+        unset($payload['review_token'], $payload['installation_confirmed']);
+        $review = $this->postJson(route('capell-installer.store'), [...$payload, 'review_only' => true]);
+        $review->assertOk()->assertSee('web_pages');
+        expect(is_file($configPath) ? file_get_contents($configPath) : null)->toBe($original);
+        $this->withCookie((string) config('session.cookie'), session()->getId());
+        $this->postJson(route('capell-installer.store'), [
+            ...$payload, 'table_aliases' => 'pages=other_pages', 'review_token' => $review->json('review.token'), 'installation_confirmed' => true,
+        ])->assertUnprocessable()->assertJsonValidationErrors('installation_confirmed');
+        expect(is_file($configPath) ? file_get_contents($configPath) : null)->toBe($original);
+        RunInstallAction::spy();
+        post(route('capell-installer.store'), [...$payload, 'review_token' => $review->json('review.token'), 'installation_confirmed' => true])
+            ->assertRedirect()->assertSessionHasNoErrors();
+        expect((require $configPath)['database']['table_aliases']['pages'])->toBe('web_pages')
+            ->and(Schema::hasTable('foreign_pages'))->toBeTrue();
+    } finally {
+        if (is_string($original)) {
+            file_put_contents($configPath, $original);
+        } elseif (is_file($configPath)) {
+            unlink($configPath);
+        }
+
+        Schema::dropIfExists('foreign_pages');
+        if ($record !== null) {
+            DB::table('migrations')->insert((array) $record);
+        }
+    }
+});
+
+it('does not write table configuration for a clean web review', function (): void {
+    $configPath = config_path('capell.php');
+    $before = is_file($configPath) ? file_get_contents($configPath) : null;
+    $payload = installPostPayload();
+    $this->postJson(route('capell-installer.store'), [...$payload, 'review_only' => true])->assertOk();
+    expect(is_file($configPath) ? file_get_contents($configPath) : null)->toBe($before);
+});
+
+it('honours web table names when there are no collisions', function (): void {
+    $changes = ResolveInstallerTableNamesAction::run([], 'web_', 'pages=web_articles');
+
+    expect($changes)->toEqual([
+        'capell.database.table_prefix' => 'web_',
+        'capell.database.table_aliases.pages' => 'web_articles',
+    ]);
+});
+
+it('passes the confirmed web table alias to a worker with stale configuration', function (): void {
+    Queue::fake();
+    config()->set('capell.database.table_aliases.pages', 'foreign_pages');
+    $record = DB::table('migrations')->where('migration', '2026_05_10_190832_12_create_pages_table')->first();
+    DB::table('migrations')->where('migration', '2026_05_10_190832_12_create_pages_table')->delete();
+    Schema::create('foreign_pages', fn (Blueprint $table) => $table->id());
+    $configPath = config_path('capell.php');
+    $original = is_file($configPath) ? file_get_contents($configPath) : null;
+    try {
+        $payload = installPostPayload(['table_aliases' => 'pages=web_pages', 'run_as_job' => '1']);
+        post(route('capell-installer.store'), $payload)->assertRedirect()->assertSessionHasNoErrors();
+        /** @var QueueFake $queue */
+        $queue = Queue::getFacadeRoot();
+        $job = $queue->pushed(RunCapellInstallJob::class)->first();
+        expect($job)->toBeInstanceOf(RunCapellInstallJob::class);
+        config()->set('capell.database.table_aliases.pages', 'stale_pages');
+        $fake = new class
+        {
+            public mixed $alias = null;
+
+            public function handle(InstallInputData $input, ProgressReporter $reporter): void
+            {
+                $this->alias = config('capell.database.table_aliases.pages');
+            }
+        };
+        app()->instance(RunInstallAction::class, $fake);
+        $job->handle();
+        expect($fake->alias)->toBe('web_pages')->and(config('capell.database.table_aliases.pages'))->toBe('stale_pages');
+    } finally {
+        if (is_string($original)) {
+            file_put_contents($configPath, $original);
+        } elseif (is_file($configPath)) {
+            unlink($configPath);
+        }
+
+        Schema::dropIfExists('foreign_pages');
+        if ($record !== null) {
+            DB::table('migrations')->insert((array) $record);
         }
     }
 });
