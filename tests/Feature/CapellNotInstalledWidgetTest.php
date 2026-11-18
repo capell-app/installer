@@ -76,8 +76,8 @@ it('renders the Filament installer page', function (): void {
 it('uses a human title for the install guide page', function (): void {
     $page = new InstallGuidePage;
 
-    expect($page->getTitle())->toBe('Install Guide')
-        ->and($page->getHeading())->toBe('Install Guide');
+    expect($page->getTitle())->toBe('Install guide')
+        ->and($page->getHeading())->toBe('Install guide');
 });
 
 it('adds the install guide to navigation when Capell is not installed', function (): void {
@@ -168,6 +168,25 @@ it('renders the installer delete action with reinstall guidance', function (): v
         ->and($modalContentHtml)
         ->toContain(__('capell-installer::widgets.delete_installer_reinstall_message'))
         ->toContain(__('capell-installer::widgets.delete_installer_reinstall_link'));
+});
+
+it('keeps the installer warning actions and notes under the message at full width', function (): void {
+    test()->actingAsAdmin();
+    Livewire::withoutLazyLoading();
+    config()->set('capell.server_side_tooling', false);
+    Site::factory()->createOne();
+
+    $html = Livewire::test(InstallerWarning::class)->html();
+    $footerAt = strpos($html, 'fi-callout-footer');
+    $footer = is_int($footerAt) ? substr($html, $footerAt) : '';
+
+    // The callout's side controls column squeezed the message into a narrow column on phones.
+    expect($html)->not->toContain('fi-callout-controls')
+        ->and(strpos($html, e(__('capell-installer::widgets.installer_installed_message'))))->toBeLessThan($footerAt)
+        ->and($footer)->toContain('data-installer-warning-actions')
+        ->and($footer)->toContain(__('capell-installer::widgets.delete_installer_action'))
+        ->and($footer)->toContain(__('capell-installer::widgets.reinstall_action'))
+        ->and($footer)->toContain(e(__('capell-installer::widgets.delete_installer_tooling_disabled')));
 });
 
 it('lazy loads the installer warning component', function (): void {
@@ -269,8 +288,11 @@ it('explains why installer deletion is unavailable when server-side tooling is d
     Livewire::withoutLazyLoading();
 
     Livewire::test(InstallerWarning::class)
-        ->assertSee('Server-side package changes are disabled')
-        ->assertSee('capell-app/installer');
+        ->assertSee(__('capell-installer::widgets.delete_installer_tooling_disabled'))
+        ->assertSee('composer remove capell-app/installer')
+        ->assertSee(__('capell-installer::widgets.delete_installer_copy'))
+        ->assertActionVisible('deleteInstaller')
+        ->assertActionDisabled('deleteInstaller');
 });
 
 it('does not display the disabled-tooling explanation when package changes are enabled', function (): void {
@@ -280,7 +302,9 @@ it('does not display the disabled-tooling explanation when package changes are e
     Livewire::withoutLazyLoading();
 
     Livewire::test(InstallerWarning::class)
-        ->assertDontSee('Server-side package changes are disabled');
+        ->assertDontSee(__('capell-installer::widgets.delete_installer_tooling_disabled'))
+        ->assertDontSee('composer remove capell-app/installer')
+        ->assertActionEnabled('deleteInstaller');
 });
 
 it('explains when installer deletion requires global administrator access', function (): void {
@@ -290,5 +314,7 @@ it('explains when installer deletion requires global administrator access', func
     Livewire::withoutLazyLoading();
 
     Livewire::test(InstallerWarning::class)
-        ->assertSee('Only a global administrator can remove the installer');
+        ->assertSee('Only a global administrator can remove the installer')
+        ->assertActionVisible('deleteInstaller')
+        ->assertActionDisabled('deleteInstaller');
 });
